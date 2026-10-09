@@ -44,6 +44,9 @@ nbinom_log <- function() {
         u_dispersion = u_dispersion
       )
     },
+
+    # Vectorized Monte Carlo score calculation
+    score_batch = nbinom_score_batch,
     
     dispersion      = TRUE,
     dispersion_name = "theta"
