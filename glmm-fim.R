@@ -1,7 +1,8 @@
-
 glmm_fim <- function(
-    X,
-    Z,
+    fixed,
+    random,
+    data,
+    cluster,
     beta,
     family,
     dispersion = NULL,
@@ -11,183 +12,130 @@ glmm_fim <- function(
     chunk_size = 1000L
 ) {
 
-  # -----------------------------
-  # Basic checks
-  # -----------------------------
+  # ---------------------------------
+  # 1. Validate inputs
+  # ---------------------------------
 
   engine <- match.arg(engine)
 
-  if (!is.list(X) || !is.list(Z)) {
-    stop("X and Z must be lists of cluster-specific design matrices.")
+  if (!inherits(fixed, "formula")) {
+    stop("'fixed' must be a formula.")
   }
 
-  n_units <- length(X)
-
-  if (length(Z) != n_units) {
-    stop("X and Z must contain the same number of clusters.")
+  if (!inherits(random, "formula")) {
+    stop("'random' must be a formula.")
   }
 
-  if (n_units == 0L) {
-    stop("At least one cluster is required.")
+  if (length(fixed) != 2L || length(random) != 2L) {
+    stop("'fixed' and 'random' must be one-sided formulas.")
   }
 
-  if (length(beta) != ncol(X[[1]])) {
-    stop("Length of beta must equal the number of columns of X.")
+  if (!is.data.frame(data)) {
+    stop("'data' must be a data frame.")
   }
 
-  if (!is.null(seed)) {
-    set.seed(seed)
+  if (!is.character(cluster) ||
+      length(cluster) != 1L ||
+      is.na(cluster) ||
+      !cluster %in% names(data)) {
+    stop("'cluster' must name a column in 'data'.")
   }
 
-  # -----------------------------
-  # Storage
-  # -----------------------------
-
-  I_cluster <- vector("list", n_units)
-
-  score_mean_cluster <- vector("list", n_units)
-  score_mcse_cluster <- vector("list", n_units)
-
-  # -----------------------------
-  # Monte Carlo by cluster
-  # -----------------------------
-
-  for (i in seq_len(n_units)) {
-
-    X_i <- X[[i]]
-    Z_i <- Z[[i]]
-
-    # Cluster-specific dimension checks
-    if (nrow(X_i) != nrow(Z_i)) {
-      stop(
-        "X and Z must have the same number of rows within cluster ",
-        i,
-        "."
-      )
-    }
-
-    if (ncol(X_i) != length(beta)) {
-      stop(
-        "All X matrices must have ",
-        length(beta),
-        " columns."
-      )
-    }
-
-    if (i > 1L && ncol(Z_i) != ncol(Z[[1]])) {
-      stop(
-        "All Z matrices must have the same number of columns."
-      )
-    }
-
-    # Monte Carlo information for cluster i
-    res_i <- mc_fisher_cluster(
-      X          = X_i,
-      Z          = Z_i,
-      beta       = beta,
-      family     = family,
-      dispersion = dispersion,
-      nsim       = nsim,
-      engine     = engine,
-      chunk_size = chunk_size
-    )
-
-    I_cluster[[i]] <- res_i$information
-
-    score_mean_cluster[[i]] <- res_i$score_mean
-    score_mcse_cluster[[i]] <- res_i$score_mcse
+  if (nrow(data) == 0L) {
+    stop("'data' must contain at least one observation.")
   }
 
-  # -----------------------------
-  # Full Fisher information
-  # -----------------------------
+  if (anyNA(data[[cluster]])) {
+    stop("Cluster identifiers cannot contain missing values.")
+  }
 
-  I_full <- Reduce("+", I_cluster)
+  # ---------------------------------
+  # 2. Construct design matrices
+  # ---------------------------------
 
-  # -----------------------------
-  # Diagnostics for full score
-  # -----------------------------
+  # model.matrix() handles intercepts,
+  # factors, interactions, and contrasts.
 
-  score_mean_full <-
-    Reduce("+", score_mean_cluster)
-
-  # Since clusters are simulated independently,
-  # variances of their MC mean estimates add.
-  score_mcse_full <- sqrt(
-    Reduce(
-      "+",
-      lapply(
-        score_mcse_cluster,
-        function(x) x^2
-      )
-    )
+  X <- model.matrix(
+    object = fixed,
+    data   = data,
+    na.action = na.fail
   )
 
-  # Standardized mean-score diagnostic
-  standardized_mean_score <-
-    score_mean_full / score_mcse_full
+  Z <- model.matrix(
+    object = random,
+    data   = data,
+    na.action = na.fail
+  )
 
-  # -----------------------------
-  # Parameter information
-  # -----------------------------
+  # ---------------------------------
+  # 3. Validate matrix dimensions
+  # ---------------------------------
 
-  parameter_names <- colnames(I_full)
-
-  p <- ncol(X[[1]])
-  q <- ncol(Z[[1]])
-
-  n_gamma <- q * (q + 1) / 2
-
-  n_dispersion <-
-    if (isTRUE(family$dispersion)) 1L else 0L
-
-  beta_idx <- seq_len(p)
-
-  gamma_idx <- p + seq_len(n_gamma)
-
-  if (n_dispersion > 0L) {
-    dispersion_idx <- p + n_gamma + seq_len(n_dispersion)
-  } else {
-    dispersion_idx <- integer(0)
+  if (length(beta) != ncol(X)) {
+    stop(
+      "Length of 'beta' must equal the ",
+      "number of columns in the fixed-effects ",
+      "design matrix (", ncol(X), ")."
+    )
   }
 
-  # -----------------------------
-  # Return glmm_fim object
-  # -----------------------------
+  if (ncol(Z) == 0L) {
+    stop("The random-effects formula must produce at least one column.")
+  }
 
-  structure(
-    list(
-      I_full          = I_full,
-      I_cluster       = I_cluster,
+  # ---------------------------------
+  # 4. Split matrices by cluster
+  # ---------------------------------
 
-      score_mean      = score_mean_full,
-      score_mcse      = score_mcse_full,
-      standardized_mean_score = standardized_mean_score,
+  cluster_id <- data[[cluster]]
 
-      score_mean_cluster = score_mean_cluster,
-      score_mcse_cluster = score_mcse_cluster,
+  idx <- split(
+    seq_len(nrow(data)),
+    factor(cluster_id, levels = unique(cluster_id)),
+    drop = TRUE
+  )
 
-      parameters      = parameter_names,
+  X_list <- lapply(
+    idx,
+    function(i) X[i, , drop = FALSE]
+  )
 
-      # Parameter blocks
-      beta_idx        = beta_idx,
-      gamma_idx       = gamma_idx,
-      dispersion_idx  = dispersion_idx,
+  Z_list <- lapply(
+    idx,
+    function(i) Z[i, , drop = FALSE]
+  )
 
-      # Monte Carlo settings
-      nsim            = nsim,
-      n_units         = n_units,
-      engine          = engine,
-      chunk_size      = chunk_size,
+  # ---------------------------------
+  # 5. Resolve distribution family
+  # ---------------------------------
 
-      family          = family$family,
-      link            = family$link,
+  if (is.character(family)) {
 
-      p               = p,
-      q               = q,
-      n_gamma         = n_gamma,
-      n_dispersion    = n_dispersion
-    ),
-    class = "glmm_fim"
+    if (length(family) != 1L || is.na(family)) {
+      stop("'family' must be a single family name.")
+    }
+
+    family <- switch(
+      family,
+      nbinom = nbinom_log(),
+      stop("Unsupported family: ", family)
+    )
+  }
+
+  # ---------------------------------
+  # 6. Call existing matrix engine
+  # ---------------------------------
+
+  glmm_fim_matrix(
+    X          = X_list,
+    Z          = Z_list,
+    beta       = beta,
+    family     = family,
+    dispersion = dispersion,
+    nsim       = nsim,
+    seed       = seed,
+    engine     = engine,
+    chunk_size = chunk_size
   )
 }
