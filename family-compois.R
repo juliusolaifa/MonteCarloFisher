@@ -1,10 +1,10 @@
+
 # ============================================================
 # Compound Poisson-Gamma: vectorized score calculation
 # ============================================================
 
 cp_score_batch <- function(
-    Y, X, Z, mu, phi, power,
-    dispersion_score = NULL
+    Y, X, Z, mu, phi, power
 ) {
 
   stopifnot(
@@ -12,6 +12,7 @@ cp_score_batch <- function(
     is.matrix(X),
     is.matrix(Z),
     is.numeric(Y),
+    all(is.finite(Y)), all(Y >= 0),
     ncol(Y) == nrow(X),
     nrow(X) == nrow(Z),
     length(mu) == ncol(Y),
@@ -24,22 +25,30 @@ cp_score_batch <- function(
   )
 
   B <- nrow(Y)
+  m <- ncol(Y)
   p <- ncol(X)
   q <- ncol(Z)
 
   # First derivative with respect to eta
   G <- sweep(Y, 2L, mu, "-")
+
   G <- sweep(
-    G, 2L, mu^(1 - power) / phi, "*"
+    G, 2L,
+    mu^(1 - power) / phi,
+    "*"
   )
 
   # Second derivative with respect to eta
   H <- sweep(
-    Y, 2L, (1 - power) * mu^(1 - power), "*"
+    Y, 2L,
+    (1 - power) * mu^(1 - power),
+    "*"
   )
 
   H <- sweep(
-    H, 2L, (2 - power) * mu^(2 - power), "-"
+    H, 2L,
+    (2 - power) * mu^(2 - power),
+    "-"
   )
 
   H <- H / phi
@@ -50,10 +59,13 @@ cp_score_batch <- function(
   # Random-effect intermediate score
   S <- G %*% Z
 
-  # Covariance parameter scores at Gamma = 0
+  # Covariance scores at Gamma = 0
   n_gamma <- q * (q + 1L) / 2L
 
-  Ug <- matrix(0, B, n_gamma)
+  Ug <- matrix(
+    0, nrow = B, ncol = n_gamma
+  )
+
   gamma_names <- character(n_gamma)
 
   k <- 0L
@@ -75,6 +87,20 @@ cp_score_batch <- function(
     }
   }
 
+  # Dispersion score
+  # Flatten column-wise to align with rep(mu, each=B).
+  D <- cp_dispersion_score(
+    y = as.vector(Y),
+    mu = rep(mu, each = B),
+    phi = phi,
+    power = power
+  )
+
+  D <- matrix(D, nrow = B, ncol = m)
+
+  Uphi <- rowSums(D)
+
+  # Parameter names
   beta_names <- colnames(X)
 
   if (is.null(beta_names)) {
@@ -84,23 +110,11 @@ cp_score_batch <- function(
   colnames(Ub) <- beta_names
   colnames(Ug) <- gamma_names
 
-  # Dispersion score requires a separate implementation
-  if (is.null(dispersion_score)) {
-    U <- cbind(Ub, Ug)
-  } else {
-    D <- dispersion_score(Y, mu, phi, power)
-
-    stopifnot(
-      is.matrix(D),
-      identical(dim(D), dim(Y)),
-      all(is.finite(D))
-    )
-
-    U <- cbind(
-      Ub, Ug,
-      phi = rowSums(D)
-    )
-  }
+  U <- cbind(
+    Ub,
+    Ug,
+    phi = Uphi
+  )
 
   storage.mode(U) <- "double"
 
@@ -131,6 +145,7 @@ cp_log <- function(power = 1.5) {
       exp(eta)
     },
 
+    # Simulate one cluster at Gamma = 0
     simulate = function(mu, dispersion) {
 
       phi <- dispersion
@@ -158,6 +173,7 @@ cp_log <- function(power = 1.5) {
       positive <- which(N > 0)
 
       if (length(positive) > 0L) {
+
         y[positive] <- rgamma(
           length(positive),
           shape = N[positive] * shape,
@@ -168,6 +184,7 @@ cp_log <- function(power = 1.5) {
       y
     },
 
+    # Observation-level derivatives
     derivatives = function(y, mu, dispersion) {
 
       phi <- dispersion
@@ -180,16 +197,25 @@ cp_log <- function(power = 1.5) {
         (2 - power) * mu^(2 - power)
       ) / phi
 
+      u_dispersion <- cp_dispersion_score(
+        y = y,
+        mu = mu,
+        phi = phi,
+        power = power
+      )
+
       list(
         g = g,
         h = h,
-        u_dispersion = NULL
+        u_dispersion = u_dispersion
       )
     },
 
+    # Vectorized Monte Carlo score
     score_batch = function(
         Y, X, Z, mu, theta
     ) {
+
       cp_score_batch(
         Y = Y,
         X = X,
