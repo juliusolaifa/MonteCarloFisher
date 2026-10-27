@@ -31,24 +31,17 @@ cp_score_batch <- function(
 
   # First derivative with respect to eta
   G <- sweep(Y, 2L, mu, "-")
-
   G <- sweep(
-    G, 2L,
-    mu^(1 - power) / phi,
-    "*"
+    G, 2L, mu^(1 - power) / phi, "*"
   )
 
   # Second derivative with respect to eta
   H <- sweep(
-    Y, 2L,
-    (1 - power) * mu^(1 - power),
-    "*"
+    Y, 2L, (1 - power) * mu^(1 - power), "*"
   )
 
   H <- sweep(
-    H, 2L,
-    (2 - power) * mu^(2 - power),
-    "-"
+    H, 2L, (2 - power) * mu^(2 - power), "-"
   )
 
   H <- H / phi
@@ -59,13 +52,10 @@ cp_score_batch <- function(
   # Random-effect intermediate score
   S <- G %*% Z
 
-  # Covariance scores at Gamma = 0
+  # Covariance parameter scores at Gamma = 0
   n_gamma <- q * (q + 1L) / 2L
 
-  Ug <- matrix(
-    0, nrow = B, ncol = n_gamma
-  )
-
+  Ug <- matrix(0, B, n_gamma)
   gamma_names <- character(n_gamma)
 
   k <- 0L
@@ -88,7 +78,6 @@ cp_score_batch <- function(
   }
 
   # Dispersion score
-  # Flatten column-wise to align with rep(mu, each=B).
   D <- cp_dispersion_score(
     y = as.vector(Y),
     mu = rep(mu, each = B),
@@ -100,7 +89,6 @@ cp_score_batch <- function(
 
   Uphi <- rowSums(D)
 
-  # Parameter names
   beta_names <- colnames(X)
 
   if (is.null(beta_names)) {
@@ -110,17 +98,12 @@ cp_score_batch <- function(
   colnames(Ub) <- beta_names
   colnames(Ug) <- gamma_names
 
-  U <- cbind(
-    Ub,
-    Ug,
-    phi = Uphi
-  )
+  U <- cbind(Ub, Ug, phi = Uphi)
 
   storage.mode(U) <- "double"
 
   U
 }
-
 
 # ============================================================
 # Compound Poisson-Gamma family specification
@@ -173,7 +156,6 @@ cp_log <- function(power = 1.5) {
       positive <- which(N > 0)
 
       if (length(positive) > 0L) {
-
         y[positive] <- rgamma(
           length(positive),
           shape = N[positive] * shape,
@@ -215,7 +197,6 @@ cp_log <- function(power = 1.5) {
     score_batch = function(
         Y, X, Z, mu, theta
     ) {
-
       cp_score_batch(
         Y = Y,
         X = X,
@@ -230,4 +211,3 @@ cp_log <- function(power = 1.5) {
     dispersion_name = "phi"
   )
 }
-
